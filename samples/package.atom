@@ -1,0 +1,11 @@
+;; Atom package definitions
+(name "libatom") ; string (or text - char*)
+(version 100000) ; integer (int)
+(metadata        ; begin
+  (author "MaiHD") ; string
+  (license      0) ; boolean (int)
+  (copyright       ; another list begin
+    (people "MaiHD")   ; string
+    (address "home")   ; string
+    (date      2017))) ; integer (int)
+    

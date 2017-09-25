@@ -1,0 +1,20 @@
+;; Game actor definitions
+(name "Actor") ; Name is auto-generate
+
+;; Transform component
+(transform
+  (position
+    (x 0.0)   ; Position attribute
+    (y 0.0)
+    (z 0.0))
+  (rotation
+    (x 0.0)   ; Rotation attribute
+    (y 0.0)
+    (z 0.0))
+  (scale
+    (x 0.0)      ; Scale attribute
+    (y 0.0)
+    (z 0.0))
+  (children             ; children list
+    (prefab 1010)))     ; integer at guid
+	   
