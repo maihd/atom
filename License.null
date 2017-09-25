@@ -2,4 +2,4 @@
 atom-prompt*
 atom-test*
 atom-viewer*
-*dSYM
+*.dSYM
