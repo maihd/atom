@@ -11,5 +11,6 @@ Atom is a lightweight data file format using s-expression.
 1. No unicode supported
 2. No binary, octa, hexa number supported
 
-## License.null
-## Copyright: MaiHD @ ${HOME}, 2017
+## Metadata
+1. License.null
+2. Copyright: MaiHD @ ${HOME}, 2017
