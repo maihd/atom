@@ -26,9 +26,7 @@
   _atomLexerError(l, e)
 #endif
 
-#define atomStrLen  strlen
-#define atomStrCpy  strcpy
-#define atomStrCmp  strcmp
+#define ATOM_BUCKETS 64
 
 #define atomIsXDigit(c) isxdigit(c)
 #define atomIsAlnum(c)  isalnum(c)
@@ -37,43 +35,9 @@
 #define atomIsSpace(c)  isspace(c)
 #define atomIsPunct(c)							\
   (c == '('  || c == ')' || c == '[' || c == ']' || c == '{' || c == '}' || \
-   c == '\'' || c == '"' || c == ',') 
+   c == '\'' || c == '"' || c == ',')
 
-/**
- * Error code
- */
-enum {
-  ATOM_ERROR_NONE,
-  ATOM_ERROR_UNBALANCED,
-  ATOM_ERROR_UNEXPECTED,
-  ATOM_ERROR_UNTERMINATED,
-};
-
-/**
- * Atom lexer for parsing
- */
-typedef struct
-{
-  enum {
-    ATOM_LEXER_STRING,
-    ATOM_LEXER_STREAM,
-  } type;
-  int    line;
-  int    column;
-  int    cursor;        /* Cursor position  */
-  size_t length;        /* Length of buffer */
-  union
-  {
-    atom_text_t string;
-    FILE*       stream;
-  } buffer;
-
-  int    errcode;       /* Error code        */
-  int    errcursor;     /* Position at error */
-  
-  /* No padding needed
-   */
-} atom_lexer_t;
+#define atomIsTextNull(t) (t.head == 0 && t.tail == 0)
 
 
 /**
@@ -87,6 +51,8 @@ struct
 } atomNodePool = { NULL, NULL, 0 };
 
 
+const atom_text_t ATOM_TEXT_NULL = { 0, 0 };
+
 /**
  * Allocate node memory, getting from pool or craete new
  * @function: atomAllocateNode
@@ -94,9 +60,9 @@ struct
 static atom_node_t* atomAllocateNode(void)
 {
   if (!atomNodePool.head) {
-    const size_t  bucketSize = 64;
-    const size_t  memorySize = sizeof(atom_node_t) * bucketSize; 
+    const size_t  bucketSize = ATOM_BUCKETS;
     const size_t  arrayCount = atomNodePool.arrayCount;
+    const size_t  memorySize = sizeof(atom_node_t) * bucketSize; 
     atom_node_t** memories   = atomNodePool.memories;
 
     memories = realloc(memories, sizeof(atom_node_t*) * (arrayCount + 1));
@@ -117,7 +83,9 @@ static atom_node_t* atomAllocateNode(void)
     for (int i = 0; i < bucketSize - 1; i++) {
       node->next = node + i;
     }
-    node->next = NULL;
+    node->next        = NULL;
+    node->name        = ATOM_TEXT_NULL; /* Does not set in atomCreate */
+    node->data.asText = ATOM_TEXT_NULL; /* Does not set in atomCreate */ 
     atomNodePool.memories   = memories;
     atomNodePool.arrayCount = arrayCount + 1; 
   }
@@ -140,10 +108,29 @@ static void atomFreeNode(atom_node_t* node)
 }
 
 
-/** 
- * Get file size
+/* @function: atomRelease
  */
-static size_t atomGetFileSize(FILE* file)
+void atomRelease(void)
+{
+  if (atomNodePool.memories) {
+    for (int i = 0; i < atomNodePool.arrayCount; i++) {
+      //atom_node_t* node = atomNodePool.memories[i];
+      free(atomNodePool.memories[i]);
+    }
+    free(atomNodePool.memories);
+
+    /* Garbage collecting
+     */
+    atomNodePool.memories   = NULL;
+    atomNodePool.head       = NULL;
+    atomNodePool.arrayCount = 0;
+  }
+}
+
+
+/* @function: atomGetFileSize
+ */
+size_t atomGetFileSize(FILE* file)
 {
   assert(file != NULL);
   fpos_t prev = ftell(file);
@@ -153,90 +140,46 @@ static size_t atomGetFileSize(FILE* file)
   return size;
 }
 
+
 /** 
  * Create a lexer with streaming buffer
  */
-static atom_lexer_t* atomCreateStreamLexer(FILE* stream)
+bool atomLexerInit(atom_lexer_t* lexer, int type, void* context)
 {
-  assert(stream != NULL);
+  assert(lexer != NULL);
   
-  atom_lexer_t* lexer = malloc(sizeof(atom_lexer_t));
-  if (!lexer) {
+  if (!context) {
     /* Out of memory
      */
-    return NULL;
+    return false;
   }
 
-  /* No buffer generation before FILE is buffered stream
-   * But if we use Unix descriptor, there is no need a buffer too
-   * This is a pro compare to using string buffer
+  /* Set context depend on lexer type
    */
+  switch (type) {
+  case ATOM_LEXER_STREAM:
+    lexer->length        = atomGetFileSize(context);
+    lexer->buffer.stream = context;
+    break;
+
+  case ATOM_LEXER_STRING:
+    lexer->length        = strlen(context);
+    lexer->buffer.string = context;
+    break;
+    
+  default:
+    return false;
+  }
   
   /* Setting fields before return
    */
-  lexer->type      = ATOM_LEXER_STREAM;
+  lexer->type      = type;
   lexer->line      = 1;
   lexer->column    = 1;
   lexer->cursor    = 0;
-  lexer->length    = atomGetFileSize(stream);
-  lexer->buffer.stream = stream;
   lexer->errcode   = ATOM_ERROR_NONE;
   lexer->errcursor = -1;
-  return lexer;
-}
-
-
-/** 
- * Create a lexer with string buffer
- */
-static atom_lexer_t* atomCreateStringLexer(atom_ctext_t string)
-{
-  assert(string != NULL);
-  
-  atom_lexer_t* lexer = malloc(sizeof(atom_lexer_t));
-  if (!lexer) {
-    /* Out of memory
-     */
-    return NULL;
-  }
-
-  /* Generate buffer from string
-   */
-  size_t      length = atomStrLen(string);
-  atom_text_t buffer = malloc(length * sizeof(atom_char_t));
-  if (!buffer) {
-    /* Out of memory
-     */
-    free(lexer);
-    return NULL;
-  }
-  memcpy(buffer, string, length);    /* Faster than strcpy */
-
-  /* Setting fields before return
-   */
-  lexer->type      = ATOM_LEXER_STRING;
-  lexer->line      = 1;
-  lexer->column    = 1;
-  lexer->cursor    = 0;
-  lexer->length    = length;
-  lexer->buffer.string = buffer;
-  lexer->errcode   = ATOM_ERROR_NONE;
-  lexer->errcursor = -1;
-  return lexer;
-}
-
-
-/**
- * Delete lexer, progress depend on the type of lexer
- */
-static void atomDeleteLexer(atom_lexer_t* lexer)
-{
-  if (lexer) {
-    if (lexer->type == ATOM_LEXER_STRING) {
-      free(lexer->buffer.string);
-    }
-    free(lexer);
-  }
+  return true;
 }
 
 
@@ -251,10 +194,28 @@ static bool atomLexerIsEnd(atom_lexer_t* lexer)
   return lexer->cursor >= lexer->length;
 }
 
+
+
 /**
  * Get the char at the cursor position
  */
-static atom_char_t atomLexerPeek(atom_lexer_t* lexer)
+static char atomLexerGet(atom_lexer_t* lexer, int cursor)
+{
+  assert(lexer != NULL);
+  if (lexer->type == ATOM_LEXER_STREAM) {
+    FILE*  stream = lexer->buffer.stream;
+    fpos_t pos = cursor;
+    fsetpos(stream, &pos);
+    return fgetc(stream);
+  }
+  return lexer->buffer.string[cursor];
+}
+
+
+/**
+ * Get the char at the cursor position
+ */
+static char atomLexerPeek(atom_lexer_t* lexer)
 {
   assert(lexer != NULL);
 
@@ -269,14 +230,8 @@ static atom_char_t atomLexerPeek(atom_lexer_t* lexer)
       cursor = lexer->cursor;
       fsetpos(stream, &cursor);
     }
-    atom_char_t result;
-    if (fread(&result, sizeof(atom_char_t), 1, stream) != 1) {
-      /* Should never reach here
-       */
-      assert(false && "Read char from stream failed!");
-      return -1;
-    }
-    fseek(stream, -sizeof(atom_char_t), SEEK_CUR); /* Go back to cursor */
+    char result = fgetc(stream);
+    fseek(stream, -sizeof(char), SEEK_CUR); /* Go back to cursor */
     return result;
   }
 
@@ -287,11 +242,11 @@ static atom_char_t atomLexerPeek(atom_lexer_t* lexer)
 /**
  * Goto next position and peek the char
  */
-static atom_char_t atomLexerNext(atom_lexer_t* lexer)
+static char atomLexerNext(atom_lexer_t* lexer)
 {
   assert(lexer != NULL);
   lexer->cursor++;
-  atom_char_t c = atomLexerPeek(lexer);
+  char c = atomLexerPeek(lexer);
   if (c == '\n') {
     lexer->line++;
     lexer->column = 1;
@@ -321,7 +276,7 @@ static void atomSkipSpace(atom_lexer_t* lexer)
 {
   assert(lexer != NULL);
 
-  atom_char_t c = atomLexerPeek(lexer);
+  char c = atomLexerPeek(lexer);
   while (atomIsSpace(c)) {
     c = atomLexerNext(lexer);
   }
@@ -335,7 +290,7 @@ static void atomSkipComment(atom_lexer_t* lexer)
 {
   assert(lexer != NULL);
 
-  atom_char_t c = atomLexerPeek(lexer);
+  char c = atomLexerPeek(lexer);
   while (c && c != '\n' && c != '\r') {
     c = atomLexerNext(lexer);
   }
@@ -403,7 +358,7 @@ static void _atomLexerError(atom_lexer_t* lexer, int errcode)
 
 /* @function: atomCreate
  */
-atom_node_t* atomCreate(atom_type_t type, atom_ctext_t name)
+atom_node_t* atomCreate(atom_type_t type, atom_text_t name)
 {
   atom_node_t* node = atomAllocateNode();
   if (!node) {
@@ -411,14 +366,12 @@ atom_node_t* atomCreate(atom_type_t type, atom_ctext_t name)
      */
     return NULL;
   }
-  node->name         = NULL;
-  node->type         = type;
-  node->parent       = NULL;
-  node->children     = NULL;
-  node->lastChild    = NULL;
-  node->next         = NULL;
-  node->prev         = NULL;
-  node->value.asText = NULL;
+  node->type      = type;
+  node->parent    = NULL;
+  node->children  = NULL;
+  node->lastChild = NULL;
+  node->next      = NULL;
+  node->prev      = NULL;
   atomSetName(node, name);
   return node;
 }
@@ -457,25 +410,21 @@ void         atomDelete(atom_node_t* node)
     }
 
     /* Free usage heap memory
-     */ 
-    /*if (node->name) {
-      free(node->name);
-    }
-    if (atomIsText(node)) {
-      free(node->value.asText);
-      }*/
+     */
     atomFreeNode(node);
   }
 }
 
 
-static bool atomToLong(atom_ctext_t text, atom_value_t* value)
+/* @function: atomToLong
+ */
+bool atomToLong(const char* text, atom_data_t* value)
 {
   assert(text != NULL && value != NULL);
 
-  atom_ctext_t ptr  = text;
-  atom_char_t  c    = *ptr;
-  int          sign = 1;
+  const char* ptr = text;
+  char c    = *ptr;
+  int  sign = 1;
   switch (c) {
   case '-':
     sign = -1;
@@ -501,12 +450,15 @@ static bool atomToLong(atom_ctext_t text, atom_value_t* value)
 }
 
 
-static bool atomToReal(atom_ctext_t text, atom_value_t* value)
+/* @function: atomToReal
+ */ 
+bool atomToReal(const char* text, atom_data_t* value)
 {
   assert(text != NULL && value != NULL);
-  atom_ctext_t ptr  = text;
-  atom_char_t  c    = *ptr;
-  int          sign = 1;
+  
+  const char* ptr = text;
+  char c    = *ptr;
+  int  sign = 1;
   switch (c) {
   case '-':
     sign = -1;
@@ -559,19 +511,18 @@ static atom_node_t* atomReadAtom(atom_lexer_t* lexer)
     return NULL;
   }
   
-  atom_char_t  text[1024];
-  atom_char_t  c    = atomLexerPeek(lexer);
+  char  c   = atomLexerPeek(lexer);
+  uint32_t head = lexer->cursor;
+  uint32_t tail = head;
   atom_node_t* node = NULL;
-  atom_text_t  ptr  = text;
   if (c == '"') {
     /* Get character until terminated
      */
     c = atomLexerNext(lexer);
     while (c && c != '"') {
-      *ptr++ = c;
+      tail++;
       c = atomLexerNext(lexer);
     }
-    *ptr++ = 0;
 
     /* A valid text must terminated with '"'
      */
@@ -583,31 +534,51 @@ static atom_node_t* atomReadAtom(atom_lexer_t* lexer)
     /* Do the last job to finish read a text
      */
     atomLexerNext(lexer);
-    node = atomNewText(NULL, text);
+    node = atomNewText(ATOM_TEXT_NULL, (atom_text_t){ head, tail });
   } else {
+    char  text[1024];
+    char* ptr = text;
     /* Read sequence characters still meet a separator
      */
     while (c && !atomIsSpace(c) && !atomIsPunct(c)) {
-      *ptr++ = c;
+      *ptr++ = c; tail++;
       c = atomLexerNext(lexer);
     }
     *ptr++ = 0;
 
     /* Parsing value of the token
      */
-    atom_value_t value;
+    atom_data_t value;
     if (atomToLong(text, &value)) {
-      node = atomNewLong(NULL, value.asLong);
+      node = atomNewLong(ATOM_TEXT_NULL, value.asLong);
     } else if (atomToReal(text, &value)) {
-      node = atomNewReal(NULL, value.asReal);
+      node = atomNewReal(ATOM_TEXT_NULL, value.asReal);
     } else {
-      node = atomCreate(ATOM_NAME, text);
+      node = atomCreate(ATOM_NAME, (atom_text_t){ head, tail });
     }
   }
 
   /* Read without error
    */
   return node;
+}
+
+
+/**
+ *
+ */
+static bool atomListToSingle(atom_node_t* node)
+{
+  atom_node_t* children  = node->children;
+  atom_node_t* lastChild = node->lastChild;
+  if (children && children == lastChild) {
+    node->type = children->type;
+    node->data = children->data;
+    atomDelete(children);
+    node->children = node->lastChild = NULL;
+    return true;
+  }
+  return false;
 }
 
 
@@ -622,8 +593,8 @@ static atom_node_t* atomReadList(atom_lexer_t* lexer)
     return NULL;
   }
 
-  atom_char_t c = atomLexerPeek(lexer);
-  atom_char_t close;
+  char c = atomLexerPeek(lexer);
+  char close;
   switch (c) {
   case '(': close = ')'; break;
   case '[': close = ']'; break;
@@ -644,15 +615,14 @@ static atom_node_t* atomReadList(atom_lexer_t* lexer)
       if (!root) {
 	root = node;
 	if (root->type == ATOM_NAME) {
-	  root->type         = ATOM_LIST;
-	  root->value.asRoot = true;
+	  root->type        = ATOM_LIST;
+	  root->data.asRoot = true;
 	}
       } else {
-	if (!atomIsList(root) || !root->value.asRoot) {
-	  atom_node_t* list = atomNewList(NULL);
-	  list->value.asRoot = true;
-	  list->children     = root;
-	  list->lastChild    = root;
+	if (!atomIsRoot(root)) {
+	  atom_node_t* list = atomNewList(ATOM_TEXT_NULL);
+	  list->data.asRoot = true;
+	  atomAddChild(list, root);
 	  root = list;
 	}
 	if (node->type == ATOM_NAME) {
@@ -661,11 +631,7 @@ static atom_node_t* atomReadList(atom_lexer_t* lexer)
 	  atomDelete(root);
 	  return NULL;
 	}
-	if (root->lastChild) {
-	  root->lastChild = root->lastChild->next = node;
-	} else {
-	  root->lastChild = root->children        = node;
-	}
+	atomAddChild(root, node);
       }
     }
 
@@ -683,23 +649,7 @@ static atom_node_t* atomReadList(atom_lexer_t* lexer)
     return NULL;
   }
   atomLexerNext(lexer);
-
-  /* 
-   */
-  if (root->children && root->children == root->lastChild) {
-    root->type  = root->children->type;
-    root->value = root->children->value;
-    /* Delete children node 
-     */
-    atom_node_t* children  = root->children;
-    children->name         = NULL;
-    children->value.asText = NULL;
-    atomDelete(children);
-    /* Collect garbage
-     */
-    root->children = root->lastChild = NULL;
-  }
-  
+  atomListToSingle(root);
   return root;
 }
 
@@ -718,7 +668,7 @@ atom_node_t* atomRead(atom_lexer_t* lexer)
     return NULL;
   }
 
-  atom_char_t c = atomLexerPeek(lexer);
+  char c = atomLexerPeek(lexer);
   switch (c) {
   case ';':
     atomSkipComment(lexer);
@@ -750,10 +700,6 @@ atom_node_t* atomRead(atom_lexer_t* lexer)
 atom_node_t* atomParse(atom_lexer_t* lexer)
 {
   assert(lexer != NULL);
-
-  //if (atomLexerCheck(lexer)) {
-  //  return NULL;
-  //}  
   
   atom_node_t* root = NULL;
   atom_node_t* node = NULL;
@@ -780,75 +726,89 @@ atom_node_t* atomParse(atom_lexer_t* lexer)
     if (!root) {
       root = node;
     } else {
-      if (!atomIsList(root) || !root->value.asRoot) {
-	atom_node_t* list   = atomNewList(NULL); /* Root list */
-	list->value.asRoot  = true;
-	list->children      = root;
-	list->lastChild     = root;
-	root = root->parent = list;
+      if (!atomIsRoot(root)) {
+	atom_node_t* list = atomNewList(ATOM_TEXT_NULL); /* Root list */
+	list->data.asRoot = true;
+	atomAddChild(list, root);
+	root = list;
       }
-      if (atomIsList(node)) {
-	node->value.asRoot = false;
-      }
-      node->parent    = root;
-      root->lastChild = root->lastChild->next = node;
+      atomAddChild(root, node);
     }
   }
-  
+  atomListToSingle(root);
   return root;
 }
 
 
-/* @function atomReadList
+/* @function: atomToText
  */
-//atom_node_t* atomReadList(atom_lexer_t* lexer)
-
-
-/* @function: atomLoadFile
- */
-atom_node_t* atomLoadFile(FILE* file)
+static bool atomToText(atom_node_t* node, char* text, size_t size)
 {
-  if (!file) {
-    return NULL;
-  }
-
-  atom_lexer_t* lexer = atomCreateStreamLexer(file);
-  if (!lexer) {
-    /* Out of memory
-     */ 
-    return NULL;
-  }
-  atom_node_t* node = atomParse(lexer);
-
-  /* Parsing finish
-   */
-  atomDeleteLexer(lexer);
-  return node;
-}
-
-
-/* @function: atomLoadText
- */
-atom_node_t* atomLoadText(atom_ctext_t buffer)
-{
-  if (!buffer) {
-    /* Nothing to load/parse
-     */
-    return NULL;
-  }
+  assert(node != NULL);
+  assert(text != NULL && size > 0);
   
-  atom_lexer_t* lexer = atomCreateStringLexer(buffer);
-  if (!lexer) {
-    /* Out of memory
-     */ 
-    return NULL;
-  }
-  atom_node_t* node = atomParse(lexer);
+  if (atomIsList(node)) {
+    char* tptr = text;
+    char  value[1024];
+    atom_node_t* child = node->children;
+    /* Write name to text
+     */
+    //if (!atomIsRoot(node) || !node->name)
+      *tptr++ = '(';
+    if (!atomIsTextNull(node->name)) {
+      /* Open list with '(' character
+       * We not use '[' or '{', but it's still valid in using and hand-edit
+       */
+      atom_text_t name = node->name;
+      //while (*name) {
+	//*tptr++ = *name++;
+      //}
+      *tptr++ = ' ';
+    }
 
-  /* Parsing finish
-   */
-  atomDeleteLexer(lexer);
-  return node;
+    /* Write children values
+     */
+    while (child) {
+      /* Get child value
+       */
+      atomToText(child, value, sizeof(value) - 1);
+      child = child->next;
+
+      /* Copy text
+       */
+      size_t length = strlen(value);
+      memcpy(tptr, value, length);
+      tptr += length;
+      if (child) *tptr++ = ' '; /* Must have a separator */
+    }
+    /* Close list
+     */ 
+    //if (!atomIsRoot(node) || !node->name)
+      *tptr++ = ')';
+    *tptr++ = 0;
+  } else {
+    char value[1024];
+    switch (node->type) {
+    case ATOM_LONG:
+      sprintf(value, "%lld", atomGetLong(node));
+      break;
+    case ATOM_REAL:
+      sprintf(value, "%lf", atomGetReal(node));
+      break;
+    case ATOM_TEXT:
+      //sprintf(value, "\"%s\"", atomGetText(node));
+      break;
+    default:
+      break;
+    }
+    if (!atomIsTextNull(node->name)) {
+      //snprintf(text, size, "(%s %s)", node->name, value);
+    } else {
+      strcpy(text, value);
+    }
+  }
+
+  return true;
 }
 
 
@@ -864,44 +824,20 @@ bool atomSaveFile(atom_node_t* node, FILE* file)
 
 /* @function: atomSaveText
  */
-bool atomSaveText(atom_node_t* node, atom_text_t buffer, size_t size)
+bool atomSaveText(atom_node_t* node, char* buffer, size_t size)
 {
   assert(node != NULL);
   assert(buffer != NULL && size > 0);
-  return false;
+  return atomToText(node, buffer, size);
 }
 
-//atom_node_t* atomCreate(atom_ctext_t name, atom_value_t value);
-//void         atomDelete(atom_node_t* node);
 
 /* @function: atomSetName
  */
-bool atomSetName(atom_node_t* node, atom_ctext_t name)
+bool atomSetName(atom_node_t* node, atom_text_t name)
 {
   assert(node != NULL);
-
-  /* In special case, given name is NULL
-   * We just simply setting name an empty string
-   */
-  if (!name) {
-    if (node->name) {
-      node->name[0] = 0;
-    }
-    return true;
-  }
-  
-  size_t length = atomStrLen(name) + 1;
-  char*  string = node->name;
-  if (string) {
-    size_t* header = (size_t*)((char*)string - sizeof(size_t));
-    if (*header < length) {
-      string = realloc(string, length * sizeof(atom_char_t));
-    }
-  } else {
-    string = malloc(length * sizeof(atom_char_t));
-  }
-  memcpy(string, name, length * sizeof(atom_char_t));
-  node->name = string;
+  node->name = name;
   return true;
 }
 
@@ -915,7 +851,7 @@ bool atomSetLong(atom_node_t* node, atom_long_t value)
     return false;
   }
 
-  node->value.asLong = value;
+  node->data.asLong = value;
   return true;
 }
 
@@ -929,41 +865,100 @@ bool atomSetReal(atom_node_t* node, atom_real_t value)
     return false;
   }
 
-  node->value.asReal = value;
+  node->data.asReal = value;
   return true;
 }
 
 
 /* @function: atomSetText
  */
-bool atomSetText(atom_node_t* node, atom_ctext_t value)
+bool atomSetText(atom_node_t* node, atom_text_t value)
 {
   assert(node != NULL);
   if (!atomIsText(node)) {
     return false;
   }
-  
-  /* In special case, given value is NULL
-   * We just simply setting value an empty string
-   */
-  if (!value) {
-    if (node->value.asText) {
-      node->value.asText[0] = 0;
-    }
-    return true;
-  }
-
-  size_t      length = atomStrLen(value) + 1;
-  atom_text_t string = node->value.asText;
-  if (string) {
-    size_t* header = (size_t*)((char*)string - sizeof(size_t));
-    if (*header / sizeof(atom_char_t) < length) {
-      string = realloc(string, length * sizeof(atom_char_t));
-    }
-  } else {
-    string = malloc(length * sizeof(atom_char_t));
-  }
-  memcpy(string, value, length * sizeof(atom_char_t));
-  node->value.asText = string;
+  node->data.asText = value;
   return true;
+}
+
+
+/* @function: atomAddChild
+ */
+void atomAddChild(atom_node_t* node, atom_node_t* child)
+{
+  assert(node != NULL);
+  child->parent = node;
+  if (atomIsList(child)) {
+    child->data.asRoot = false;
+  }
+  if (node->lastChild) {
+    child->prev     = node->lastChild; 
+    node->lastChild = node->lastChild->next = child;
+  } else {
+    node->lastChild = node->children        = child;
+  }
+}
+
+
+/* @function: atomPrint
+ */
+void atomPrint(atom_lexer_t* lexer, atom_node_t* node)
+{
+  static const char* types[] = {
+    "ATOM_NONE",
+    "ATOM_LIST",
+    "ATOM_LONG",
+    "ATOM_REAL",
+    "ATOM_TEXT",
+    "ATOM_NAME",
+  };
+ 
+  static int stack = 0;
+  if (node) {
+    for (int i = 0; i < stack; i++) {
+      fputc(' ', stdout);
+    }
+    fputs(types[node->type], stdout);
+    fputs(" - ", stdout);
+    for (int i = node->name.head; i < node->name.tail; i++) {
+      fputc(atomLexerGet(lexer, i), stdout);
+    }
+    switch (node->type) {
+    case ATOM_LIST:
+      stack++;
+      atom_node_t* children = node->children;
+      if (children == NULL) {
+	fputs(" - (null)\n", stdout);
+      } else {
+	fputc('\n', stdout);
+	while (children) {
+	  atomPrint(lexer, children);
+	  children = children->next;
+	}
+      }
+      stack--;
+      break;
+      
+    case ATOM_LONG:
+      printf(" - %lld\n", atomGetLong(node));
+      break;
+      
+    case ATOM_REAL:
+      printf(" - %lf\n", atomGetReal(node));
+      break;
+      
+    case ATOM_TEXT:
+      fputs(" - \"", stdout);
+      for (int i = node->data.asText.head; i < node->data.asText.tail; i++) {
+	fputc(atomLexerGet(lexer, i), stdout);
+      }
+      fputc('\n', stdout);
+      break;
+
+    default:
+      fputc('\n', stdout);
+      break;
+    }
+  }
 }

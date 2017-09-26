@@ -27,10 +27,14 @@ int main(int argc, char* argv[])
     fprintf(stderr, "File not found! path: %s\n", filename);
     return 1;
   }
-  atom_node_t* node = atomLoadFile(file);
-  if (node) {
-    atomPrint(node);
-    atomDelete(node);
+  atom_node_t* node = NULL;
+  atom_lexer_t lexer;
+  if (!atomLexerInit(&lexer, ATOM_LEXER_STREAM, file)) {
+    node = atomParse(&lexer);
+    if (node) {
+      atomPrint(&lexer, node);
+      atomDelete(node);
+    }
   }
   fclose(file);
   
