@@ -16,10 +16,10 @@
 #include "../src/atom.h"
 #include "jsmn/jsmn.h"
 
-static atom_text_t atomGetLine(atom_text_t line, size_t size)
+static char* atomGetLine(char* line, size_t size)
 {
   assert(line != NULL);
-  atom_char_t c = fgetc(stdin);
+  char c = fgetc(stdin);
   while (size-- && c != '\n' && c != '\r') {
     *line++ = c;
     c = fgetc(stdin);
@@ -31,8 +31,7 @@ static atom_text_t atomGetLine(atom_text_t line, size_t size)
 /**
  * Parse json then convert to atom node
  */
-static atom_node_t* atomFromJson(const char* context, jsmntok_t* tokens,
-				 int* size);
+static atom_node_t* atomFromJson(const char* line, jsmntok_t* tokens,int* size);
 static bool         atomJsonToAtom(const char* json, const char* atom);
 
 int main(int argc, char* argv[])
@@ -47,7 +46,7 @@ int main(int argc, char* argv[])
     return !atomJsonToAtom(argv[1], argv[2]);
   }
   
-  atom_char_t line[1024];
+  char line[1024];
   while (true) {
     printf(">> ");
     atomGetLine(line, sizeof(line) - 1);
@@ -65,22 +64,27 @@ int main(int argc, char* argv[])
       printf("Object expected\n");
       continue;
     }
-    atom_node_t* node = atomFromJson(line, token, NULL);
-    atomSaveText(node, line, sizeof(line) - 1);
-    printf("%s\n", line);
-    atomDelete(node);
+    atom_lexer_t lexer;
+    if (atomLexerInit(&lexer, ATOM_LEXER_STREAM, line)) {
+      atom_node_t* node = atomFromJson(line, token, NULL);
+      if (node) {
+	atomSaveText(&lexer, node, line, sizeof(line) - 1);
+	printf("%s\n", line);
+	atomDelete(node);
+      }
+    }
   }
   
   return 0;
 }
 
 
-atom_node_t* atomFromJson(atom_ctext_t context, jsmntok_t* tokens, int* size)
+atom_node_t* atomFromJson(const char* context, jsmntok_t* tokens, int* size)
 {
   atom_node_t* node = NULL;
   switch (tokens->type) {
   case JSMN_OBJECT:
-    node = atomNewList(NULL);
+    node = atomNewList(ATOM_TEXT_NULL);
     int count    = tokens->size;
     int nodeSize = 1;
     for (int i = 0; i < count; i++) {
@@ -89,12 +93,7 @@ atom_node_t* atomFromJson(atom_ctext_t context, jsmntok_t* tokens, int* size)
       
       /* Get name
        */
-      atom_char_t name[1024];
-      atom_text_t nptr = name;
-      for (int c = key->start; c < key->end; c++) {
-	*nptr++ = context[c];
-      }
-      *nptr = 0;
+      atom_text_t name = { key->start, key->end - 1 };
 
       /* Get value
        */
@@ -105,8 +104,8 @@ atom_node_t* atomFromJson(atom_ctext_t context, jsmntok_t* tokens, int* size)
 	atomSetName(child, name);
 	nodeSize += childSize - 1;
       } else {
-	atom_char_t text[1024];
-	atom_text_t tptr = text;
+        char  text[1024];
+        char* tptr = text;
 	for (int c = value->start; c < value->end; c++) {
 	  *tptr++ = context[c];
 	}
@@ -117,13 +116,13 @@ atom_node_t* atomFromJson(atom_ctext_t context, jsmntok_t* tokens, int* size)
 	} else if (strcmp(text, "true") == 0) {
 	  child = atomNewLong(name, 1);
 	} else if (tokens->type == JSMN_STRING) {
-	  child = atomNewText(name, text);
+	  child = atomNewText(name, (atom_text_t){ value->start, value->end - 1 });
 	} else if (atomToLong(text, &data)) {
 	  child = atomNewLong(name, data.asLong);
 	} else if (atomToReal(text, &data)) {
 	  child = atomNewReal(name, data.asReal);
 	} else {
-	  child = atomNewText(name, text);
+	  child = atomNewText(name, (atom_text_t){ value->start, value->end - 1 });
 	}
       }
       atomAddChild(node, child);
@@ -132,7 +131,7 @@ atom_node_t* atomFromJson(atom_ctext_t context, jsmntok_t* tokens, int* size)
     break;
 	
   case JSMN_ARRAY: {
-    node = atomNewList(NULL);
+    node = atomNewList(ATOM_TEXT_NULL);
     int count    = tokens->size;
     int nodeSize = 1;
     for (int i = 0; i < count; i++) {
@@ -147,25 +146,27 @@ atom_node_t* atomFromJson(atom_ctext_t context, jsmntok_t* tokens, int* size)
 
   case JSMN_STRING:
   case JSMN_PRIMITIVE: {
-    atom_char_t text[1024];
-    atom_text_t tptr = text;
+    char  text[1024];
+    char* tptr = text;
     for (int c = tokens->start; c < tokens->end; c++) {
       *tptr++ = context[c];
     }
     *tptr = 0;
     atom_data_t data;
     if (strcmp(text, "false") == 0) {
-      node = atomNewLong(NULL, 0);
+      node = atomNewLong(ATOM_TEXT_NULL, 0);
     } else if (strcmp(text, "true") == 0) {
-      node = atomNewLong(NULL, 1);
+      node = atomNewLong(ATOM_TEXT_NULL, 1);
     } else if (tokens->type == JSMN_STRING) {
-      node = atomNewText(NULL, text);
+      data.asText = (atom_text_t){ tokens->start, tokens->end - 1 };
+      node = atomNewText(ATOM_TEXT_NULL, data.asText);
     } else if (atomToLong(text, &data)) {
-      node = atomNewLong(NULL, data.asLong);
+      node = atomNewLong(ATOM_TEXT_NULL, data.asLong);
     } else if (atomToReal(text, &data)) {
-      node = atomNewReal(NULL, data.asReal);
+      node = atomNewReal(ATOM_TEXT_NULL, data.asReal);
     } else {
-      node = atomNewText(NULL, text);
+      data.asText = (atom_text_t){ tokens->start, tokens->end - 1 };
+      node = atomNewText(ATOM_TEXT_NULL, data.asText);
     }
     if (size) *size = 1;
   } break;
@@ -191,13 +192,12 @@ bool atomJsonToAtom(const char* json, const char* atom)
 
   /* Read the content from file
    */
-  size_t buffSize = 809600;
   size_t fileSize = atomGetFileSize(file);
-  atom_char_t* buffer = malloc(buffSize);  /* Super large buffer */
+  char* buffer = malloc(fileSize);  /* Super large buffer */
 
   printf("File size: %zu\n", fileSize);
   fread(buffer, fileSize, 1, file);
-  buffer[fileSize] = 0;
+  buffer[fileSize - 1] = 0;
   fclose(file); file = NULL;
 
   /* Parse json
@@ -205,7 +205,7 @@ bool atomJsonToAtom(const char* json, const char* atom)
   jsmn_parser parser;
   jsmntok_t* tokens = malloc(sizeof(jsmntok_t) * fileSize);
   jsmn_init(&parser);
-  int r = jsmn_parse(&parser, buffer, buffSize, tokens, 8096);
+  int r = jsmn_parse(&parser, buffer, fileSize, tokens, fileSize);
   if (r < 0) {
     printf("Failed to parse json\n");
     return false;
@@ -223,18 +223,6 @@ bool atomJsonToAtom(const char* json, const char* atom)
     return false;
   }
 
-  /* Save to text
-   */
-  if (!atomSaveText(node, buffer, buffSize)) {
-    printf("Failed to convert json to atom!"); 
-    atomDelete(node);
-    return false;
-  }
-  atomDelete(node);
-  printf("Json to atom converted!\n");
-  printf("Atom: %s\n", buffer);
-
-
   /* Write to file
    */
   file = fopen(atom, "w+");
@@ -242,10 +230,28 @@ bool atomJsonToAtom(const char* json, const char* atom)
     fprintf(stderr, "Open atom file for writing failed! path: %s\n", atom);
     return false;
   }
+  
   bool result = true;
-  if (fwrite(buffer, strlen(buffer), 1, file) != 1) {
-    fprintf(stderr, "Write content to atom file failed!");
-    result = false;
+  atom_lexer_t lexer;
+  if (atomLexerInit(&lexer, ATOM_LEXER_STRING, buffer)) {
+    char* atomBuffer = malloc(fileSize);
+    if (!atomSaveText(&lexer, node, atomBuffer, fileSize)) {
+      printf("Failed to convert json to atom!"); 
+      atomDelete(node);
+      return false;
+    }
+    
+    if (fwrite(atomBuffer, strlen(atomBuffer), 1, file) != 1) {
+      fprintf(stderr, "Write content to atom file failed!");
+      result = false;
+    }
+  
+    atomDelete(node);
+    printf("Json to atom converted!\n");
+    printf("Atom: %s\n", atomBuffer);
+  } else {
+    fprintf(stderr, "Failed to initialize lexer!\n");
+    return false;
   }
   fclose(file);
 

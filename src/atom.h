@@ -164,10 +164,10 @@ __atomextern void         atomAddChild(atom_node_t* node, atom_node_t* child);
 __atomextern atom_node_t* atomParse(atom_lexer_t* lexer);
 
 __atomextern bool atomSaveFile(atom_node_t* node, FILE* file);
-__atomextern bool atomSaveText(atom_node_t* node, char* buffer, size_t size);
+__atomextern bool atomSaveText(atom_lexer_t* lexer, atom_node_t* node,
+			       char* buffer, size_t size);
 
 __atominline atom_type_t  atomGetType(atom_node_t* node);
-//__atominline size_t       atomGetRefCount(atom_node_t* node);
 __atominline atom_node_t* atomGetParent(atom_node_t* node);
 __atominline atom_node_t* atomGetChildren(atom_node_t* node);
 __atominline atom_node_t* atomGetLastChild(atom_node_t* node);

@@ -29,12 +29,16 @@ int main(int argc, char* argv[])
   }
   atom_node_t* node = NULL;
   atom_lexer_t lexer;
-  if (!atomLexerInit(&lexer, ATOM_LEXER_STREAM, file)) {
+  if (atomLexerInit(&lexer, ATOM_LEXER_STREAM, file)) {
     node = atomParse(&lexer);
     if (node) {
       atomPrint(&lexer, node);
       atomDelete(node);
+    } else {
+      fprintf(stderr, "Parsing error!\n");
     }
+  } else {
+    fprintf(stderr, "Initialize lexer failed!\n");
   }
   fclose(file);
   
