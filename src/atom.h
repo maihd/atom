@@ -199,6 +199,12 @@ __atomextern bool         atomSetText(atom_node_t* node, atom_text_t value);
  * Utilities
  */
 
+__atominline bool   atomIsTextNull(atom_text_t text);
+__atomextern size_t atomTextCopy(atom_lexer_t* lexer, atom_text_t text,
+				 char* string);
+__atomextern int    atomTextCompare(atom_lexer_t* lexer, atom_text_t text,
+				    const char* string);
+
 __atomextern size_t atomGetFileSize(FILE* file);
 __atomextern void   atomPrint(atom_lexer_t* lexer, atom_node_t* node);
 __atomextern bool   atomToLong(const char* text, atom_data_t* value);
@@ -207,6 +213,12 @@ __atomextern bool   atomToReal(const char* text, atom_data_t* value);
 /******
  * Inline functions definition
  */
+
+
+__atominline bool   atomIsTextNull(atom_text_t text)
+{
+  return (text.head == 0 && text.tail == 0);
+}
 
 
 /* @function: atomGetType

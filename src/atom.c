@@ -37,8 +37,6 @@
   (c == '('  || c == ')' || c == '[' || c == ']' || c == '{' || c == '}' || \
    c == '\'' || c == '"' || c == ',')
 
-#define atomIsTextNull(t) (t.head == 0 && t.tail == 0)
-
 
 /**
  * Atom node memory pool
@@ -999,4 +997,37 @@ void atomPrint(atom_lexer_t* lexer, atom_node_t* node)
       break;
     }
   }
+}
+
+
+/* @function: atomTextCopy
+ */
+size_t atomTextCopy(atom_lexer_t* lexer, atom_text_t text, char* string)
+{
+  assert(lexer != NULL);
+  
+  size_t size = 0;
+  for (int i = text.head; i < text.tail; i++, size++) {
+    *string++ = atomLexerGet(lexer, i);
+  }
+  return size;
+}
+
+
+/* @function: atomTextCompare
+ */
+int atomTextCompare(atom_lexer_t* lexer, atom_text_t text, const char* string)
+{
+  assert(lexer != NULL);
+  
+  char a, b;
+  for (int i = text.head; i < text.tail && (b = *string); i++, string++) {
+    a = atomLexerGet(lexer, i);
+    if (a < b) {
+      return -1;
+    } else if (a > b) {
+      return 1;
+    }
+  }
+  return 0;
 }
