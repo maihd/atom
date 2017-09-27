@@ -750,6 +750,10 @@ static size_t atomToText(atom_lexer_t* lexer, atom_node_t* node,
 
   static int stack = 0;
   size_t result = 0;
+  for (int i = 0; i < stack * 2; i++) {
+    *text++ = ' ';
+    result++;
+  }
   if (atomIsList(node)) {
     stack++;
     char* tptr = text;
@@ -779,7 +783,7 @@ static size_t atomToText(atom_lexer_t* lexer, atom_node_t* node,
       result++;
       /* Get child value
        */
-      size_t childSize = atomToText(lexer, child, text + result, size - result);
+      size_t childSize = atomToText(lexer, child, tptr, size - result);
       child = child->next;
       tptr += childSize;
       result += childSize;
@@ -795,10 +799,6 @@ static size_t atomToText(atom_lexer_t* lexer, atom_node_t* node,
       result++;
       stack--;
   } else {
-    for (int i = 0; i < stack * 2; i++) {
-      *text++ = ' ';
-      result++;
-    }
     if (!atomIsTextNull(node->name)) {
       *text++ = '(';
       result++;
@@ -863,7 +863,7 @@ bool atomSaveText(atom_lexer_t* lexer, atom_node_t* node,
   }
   assert(buffer != NULL && size > 0);
   size_t count = atomToText(lexer, node, buffer, size);
-  buffer[count - 1] = 0;
+  buffer[count] = 0;
   return true;
 }
 

@@ -234,7 +234,7 @@ bool atomJsonToAtom(const char* json, const char* atom)
   bool result = true;
   atom_lexer_t lexer;
   if (atomLexerInit(&lexer, ATOM_LEXER_STRING, buffer)) {
-    char* atomBuffer = malloc(fileSize);
+    char* atomBuffer = malloc(fileSize * 10);
     if (!atomSaveText(&lexer, node, atomBuffer, fileSize)) {
       printf("Failed to convert json to atom!"); 
       atomDelete(node);

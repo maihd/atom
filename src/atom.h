@@ -36,10 +36,10 @@
 typedef int bool;
 #endif
 #if !defined(__cplusplus) && !defined(true)
-enum { true = 1 };  /* Prevent undef (maybe wrong :D) */
+#define true 1
 #endif
 #if !defined(__cplusplus) && !defined(false)
-enum { false = 0 }; /* Prevent undef (maybe wrong :D) */
+#define false 0
 #endif
 typedef int64_t atom_long_t; /* Integer number  */
 typedef double  atom_real_t; /* Real    number  */
@@ -72,6 +72,15 @@ enum {
   ATOM_ERROR_UNBALANCED,
   ATOM_ERROR_UNEXPECTED,
   ATOM_ERROR_UNTERMINATED,
+};
+
+
+/**
+ * Lexer type
+ */
+enum {
+  ATOM_LEXER_STRING,
+  ATOM_LEXER_STREAM,
 };
 
 
@@ -117,10 +126,7 @@ struct atom_node
  */
 typedef struct
 {
-  enum {
-    ATOM_LEXER_STRING,
-    ATOM_LEXER_STREAM,
-  } type;
+  int    type;
   int    line;
   int    column;
   int    cursor;        /* Cursor position  */
