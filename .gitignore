@@ -3,4 +3,5 @@ atom-prompt
 atom-test
 atom-viewer
 atom-worker
+*.exe
 *.dSYM

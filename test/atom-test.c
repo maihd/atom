@@ -7,18 +7,19 @@
  */
 
 
-#include "../src/atom.h"
+#include "../atom.h"
 #include <assert.h>
 #include <string.h>
 
-static char* atomGetline(char* line, size_t size)
+static char* atom_getline(char* line, size_t size)
 {
-  assert(line != NULL);
-  char c = fgetc(stdin);
-  while (size-- && c != '\n' && c != '\r') {
-    *line++ = c;
-    c = fgetc(stdin);
-  }
-  *line = 0;
-  return line;
+    assert(line != NULL);
+    char c = fgetc(stdin);
+    while (size-- && c != '\n' && c != '\r')
+    {
+	*line++ = c;
+	c = fgetc(stdin);
+    }
+    *line = 0;
+    return line;
 }
