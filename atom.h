@@ -17,7 +17,7 @@
  * Metadata constants
  */
 #define ATOM_LIBNAME "libatom"
-#define ATOM_VERSION "v1.0.03"
+#define ATOM_VERSION "v1.0.04"
 
 /******
  * Custom modifiers
@@ -86,12 +86,12 @@ typedef enum
  */
 enum
 {
-    ATOM_ERROR_NONE,
-    ATOM_ERROR_ARGUMENTS,
-    ATOM_ERROR_LEXERTYPE,
-    ATOM_ERROR_UNBALANCED,
-    ATOM_ERROR_UNEXPECTED,
-    ATOM_ERROR_UNTERMINATED,
+    ATOM_ERROR_NONE          =  0,
+    ATOM_ERROR_ARGUMENTS     = -1,
+    ATOM_ERROR_LEXERTYPE     = -2,
+    ATOM_ERROR_UNBALANCED    = -3,
+    ATOM_ERROR_UNEXPECTED    = -4,
+    ATOM_ERROR_UNTERMINATED  = -5,
 };
 
 
@@ -200,10 +200,10 @@ __atomextern void         atom_addchild(atom_node_t* node, atom_node_t* child);
 
 __atomextern atom_node_t* atom_parse(atom_lexer_t* lexer);
 
-__atomextern int atom_save_file(atom_node_t* node, FILE* file);
-__atomextern int atom_save_text(atom_node_t* node, char* text, size_t size);
-__atomextern int atom_save_file_with_lexer(atom_lexer_t* lexer, atom_node_t* node, FILE* file);  
-__atomextern int atom_save_text_with_lexer(atom_lexer_t* lexer, atom_node_t* node, char* text, size_t size);
+__atomextern int atom_save_stream(atom_node_t* node, FILE* stream);
+__atomextern int atom_save_string(atom_node_t* node, char* string, size_t length);
+__atomextern int atom_save_stream_with_lexer(atom_lexer_t* lexer, atom_node_t* node, FILE* stream);  
+__atomextern int atom_save_string_with_lexer(atom_lexer_t* lexer, atom_node_t* node, char* string, size_t length);
 
 __atominline atom_node_t* atom_newlist(atom_text_t name);
 __atominline atom_node_t* atom_newlong(atom_text_t name, atom_long_t value);
@@ -335,7 +335,8 @@ typedef struct atom_nodepool atom_nodepool_t;
 struct atom_nodepool
 {
     atom_nodepool_t* prev;
-    atom_node_t*     node;
+    atom_node_t*     node;  
+    /* No padding needed */
 } *atom_nodepool = NULL; 
 
 /**
@@ -1091,9 +1092,125 @@ atom_node_t* atom_parse(atom_lexer_t* lexer)
     return root;
 }
 
+static size_t atom_totext(atom_node_t* node, char* text, size_t size)
+{
+    atom_assert(node != NULL);
+    atom_assert(text != NULL && size > 0);
 
-/* @function: atom_totext
-*/
+    static int stack = 0;
+    size_t result = 0;
+    for (int i = 0; i < stack * 2; i++)
+    {
+        *text++ = ' ';
+        result++;
+    }
+
+    if (node->type == ATOM_LIST)
+    {
+        stack++;
+        char* tptr = text;
+        atom_node_t* child = node->children;
+
+        /* Write name to text
+        */
+        *tptr++ = '(';
+        result++;
+
+        if (node->name.cstr)
+        {
+            /* Open list with '(' character
+            * We not use '[' or '{', but it's still valid in using
+            * and hand-edit
+            */
+            int count = (int)(strcpy(tptr, node->name.cstr) - tptr); 
+            tptr   += count;
+            *tptr++ = ' ';
+            result += count;
+        }
+
+        /* Write children values
+        */
+        while (child)
+        {
+            *tptr++ = '\n';
+            result++;
+            /* Get child value
+            */
+            size_t count = atom_totext(child, tptr, size - result);
+            child   = child->next;
+            tptr   += count;
+            result += count;
+            if (child)
+            {
+                *tptr++ = ' '; /* Must have a separator */
+                result++;
+            }
+        }
+
+        /* Close list
+        */ 
+        *tptr++ = ')';
+        result++;
+        stack--;
+    }
+    else
+    {
+        if (node->name.cstr)
+        {
+            *text++ = '(';
+            result++;      
+
+            int count = (int)(strcpy(text, node->name.cstr) - text);
+            text   += count;
+            *text++ = ' ';
+            result += count;
+
+            *text++ = ' ';
+            result++;
+        }
+
+        switch (node->type)
+        {
+        case ATOM_LONG:
+        {
+            size_t count = sprintf(text, "%ld", node->data.as_long);
+            result += count;
+            text   += count;
+        } break;
+
+        case ATOM_REAL:
+        {
+            size_t count = sprintf(text, "%lf", node->data.as_real);
+            result += count;
+            text   += count;
+        } break;
+
+        case ATOM_TEXT:
+            result++;
+            *text++ = '\"';    
+
+            int count = (int)(strcpy(text, node->data.as_text.cstr) - text);
+            text   += count;
+            result += count;
+            
+            result++;
+            *text++ = '\"';
+            break;
+
+        default:
+            break;
+        }
+
+        if (node->name.cstr)
+        {
+            *text++ = ')';
+            result++;
+        }
+    }
+    return result;
+}
+
+/* @function: atom_totext_with_lexer */
 static size_t atom_totext_with_lexer(atom_lexer_t* lexer, atom_node_t* node, char* text, size_t size)
 {
     atom_assert(node != NULL);
@@ -1218,19 +1335,18 @@ static size_t atom_totext_with_lexer(atom_lexer_t* lexer, atom_node_t* node, cha
 }
 
 
-/* @function: atom_save_file
-*/
-int atom_save_file(atom_node_t* node, FILE* file)
+/* @function: atom_save_stream */
+int atom_save_stream(atom_node_t* node, FILE* stream)
 {
     atom_assert(node != NULL);
-    atom_assert(file != NULL);
+    atom_assert(stream != NULL);
 
     static int stack = 0;
     int result = 0;
     for (int i = 0; i < stack; i += 2)
     {
-        fputc(' ', file);
-        fputc(' ', file);
+        fputc(' ', stream);
+        fputc(' ', stream);
         result += 2;
     }
 
@@ -1240,7 +1356,7 @@ int atom_save_file(atom_node_t* node, FILE* file)
         atom_node_t* child = node->children;
         /* Write name to text
         */
-        fputc('(', file);
+        fputc('(', stream);
         result++;
         if (node->name.cstr)
         {
@@ -1248,8 +1364,8 @@ int atom_save_file(atom_node_t* node, FILE* file)
             * We not use '[' or '{', but it's still valid in using
             * and hand-edit
             */
-            result += fputs(node->name.cstr, file); 
-            fputc(' ', file);
+            result += fputs(node->name.cstr, stream); 
+            fputc(' ', stream);
             result++;
         }
 
@@ -1257,22 +1373,22 @@ int atom_save_file(atom_node_t* node, FILE* file)
         */
         while (child)
         {
-            fputc('\n', file);
+            fputc('\n', stream);
             result++;
             /* Get child value
             */
-            int count = atom_save_file(child, file);
+            int count = atom_save_stream(child, stream);
             child   = child->next;
             result += count;
             if (child)
             {
-                fputc(' ', file);
+                fputc(' ', stream);
                 result++;
             }
         }
         /* Close list
         */ 
-        fputc(')', file);
+        fputc(')', stream);
         result++;
         stack--;
     }
@@ -1280,10 +1396,10 @@ int atom_save_file(atom_node_t* node, FILE* file)
     {
         if (node->name.cstr)
         {
-            fputc('(', file);
+            fputc('(', stream);
             result++; 
-            result += fputs(node->name.cstr, file);
-            fputc(' ', file);
+            result += fputs(node->name.cstr, stream);
+            fputc(' ', stream);
             result++;
         }
 
@@ -1291,21 +1407,21 @@ int atom_save_file(atom_node_t* node, FILE* file)
         {
         case ATOM_LONG:
         {
-            size_t count = fprintf(file, "%ld", node->data.as_long);
+            size_t count = fprintf(stream, "%ld", node->data.as_long);
             result += count;
         } break;
 
         case ATOM_REAL:
         {
-            size_t count = fprintf(file, "%lf", node->data.as_real);
+            size_t count = fprintf(stream, "%lf", node->data.as_real);
             result += count;
         } break;
 
         case ATOM_TEXT:
             result++;
-            fputc('\"', file);
-            result += fputs(node->data.as_text.cstr, file) + 1;
-            fputc('\"', file);
+            fputc('\"', stream);
+            result += fputs(node->data.as_text.cstr, stream) + 1;
+            fputc('\"', stream);
             break;
 
         default:
@@ -1314,7 +1430,7 @@ int atom_save_file(atom_node_t* node, FILE* file)
 
         if (node->name.cstr)
         {              
-            fputc(')', file);
+            fputc(')', stream);
             result++;
         }
     }
@@ -1322,20 +1438,154 @@ int atom_save_file(atom_node_t* node, FILE* file)
     return result;
 }
 
-
-/* @function: atom_save_text_with_lexer
-*/
-int atom_save_text_with_lexer(atom_lexer_t* lexer, atom_node_t* node, char* buffer, size_t size)
+/* @function: atom_save_stream_with_lexer */
+int atom_save_stream_with_lexer(atom_lexer_t* lexer, atom_node_t* node, FILE* stream)
 {
-    atom_assert(lexer != NULL);
-    if (!node || !buffer || size == 0)
+    atom_assert(node != NULL);
+    atom_assert(stream != NULL);
+
+    static int stack = 0;
+    int result = 0;
+    for (int i = 0; i < stack; i += 2)
+    {
+        fputc(' ', stream);
+        fputc(' ', stream);
+        result += 2;
+    }
+
+    if (node->type == ATOM_LIST)
+    {
+        stack++;
+        atom_node_t* child = node->children;
+        /* Write name to text
+        */
+        fputc('(', stream);
+        result++;
+        if (!atom_istextnull(node->name))
+        {
+            /* Open list with '(' character
+            * We not use '[' or '{', but it's still valid in using
+            * and hand-edit
+            */
+            atom_text_t name = node->name;
+            for (int i = name.head; i <= name.tail; i++)
+            {
+                fputc(atom_lexer_get(lexer, i), stream);
+                result++;
+            }
+            fputc(' ', stream);
+            result++;
+        }
+
+        /* Write children values
+        */
+        while (child)
+        {
+            fputc('\n', stream);
+            result++;
+            /* Get child value
+            */
+            int count = atom_save_stream(child, stream);
+            child   = child->next;
+            result += count;
+            if (child)
+            {
+                fputc(' ', stream);
+                result++;
+            }
+        }
+        /* Close list
+        */ 
+        fputc(')', stream);
+        result++;
+        stack--;
+    }
+    else
+    {
+        if (!atom_istextnull(node->name))
+        {
+            fputc('(', stream);
+            result++;                               
+            atom_text_t name = node->name;
+            for (int i = name.head; i <= name.tail; i++)
+            {
+                fputc(atom_lexer_get(lexer, i), stream);
+                result++;
+            }
+            fputc(' ', stream);
+            result++;
+        }
+
+        switch (node->type)
+        {
+        case ATOM_LONG:
+        {
+            size_t count = fprintf(stream, "%ld", node->data.as_long);
+            result += count;
+        } break;
+
+        case ATOM_REAL:
+        {
+            size_t count = fprintf(stream, "%lf", node->data.as_real);
+            result += count;
+        } break;
+
+        case ATOM_TEXT:
+            result++;
+            fputc('\"', stream);
+            
+            atom_text_t text = node->data.as_text;
+            for (int i = text.head; i <= text.tail; i++)
+            {
+                fputc(atom_lexer_get(lexer, i), stream);
+                result++;
+            }
+
+            result++;
+            fputc('\"', stream);
+            break;
+
+        default:
+            break;
+        }
+
+        if (!atom_istextnull(node->name))
+        {              
+            fputc(')', stream);
+            result++;
+        }
+    }
+
+    return result;
+}
+
+/* @function: atom_save_string */
+int atom_save_string(atom_node_t* node, char* string, size_t length)
+{
+    if (!node || !string || length == 0)
     {
         return ATOM_ERROR_ARGUMENTS;
     }
 
-    atom_assert(buffer != NULL && size > 0);
-    size_t count = atom_totext_with_lexer(lexer, node, buffer, size);
-    buffer[count] = 0;
+    atom_assert(string != NULL && length > 0);
+    size_t count = atom_totext(node, string, length);
+    string[count] = 0;
+    return ATOM_ERROR_NONE;
+}
+
+/* @function: atom_save_string_with_lexer */
+int atom_save_string_with_lexer(atom_lexer_t* lexer, atom_node_t* node, char* string, size_t length)
+{
+    atom_assert(lexer != NULL);
+
+    if (!node || !string || length == 0)
+    {
+        return ATOM_ERROR_ARGUMENTS;
+    }
+
+    atom_assert(string != NULL && length > 0);
+    size_t count = atom_totext_with_lexer(lexer, node, string, length);
+    string[count] = 0;
     return ATOM_ERROR_NONE;
 }
 
