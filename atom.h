@@ -17,7 +17,7 @@
  * Metadata constants
  */
 #define ATOM_LIBNAME "libatom"
-#define ATOM_VERSION "v1.0.02"
+#define ATOM_VERSION "v1.0.03"
 
 /******
  * Custom modifiers
@@ -140,7 +140,6 @@ struct atom_node
     /* No padding needed */
 };
 
-
 /**
  * Atom lexer for parsing
  */
@@ -155,11 +154,11 @@ typedef struct
     {
         const char* string;
         FILE*       stream;
-    } buffer;
+    };
 
     int    errcode;       /* Error code        */
     int    errcursor;     /* Position at error */
-  
+
     /* No padding needed */
 } atom_lexer_t;
 
@@ -170,7 +169,18 @@ static const atom_text_t ATOM_TEXT_NULL = { 0, 0 };
 
 
 /**
- * Release all usage memories by atom module
+ * Initialize memory buffer of the atom's runtime
+ *
+ * @param data    - pointer to the memory
+ * @param size    - size of the memory
+ * @param extract - function to extract the memory from the buffer
+ * @param collect - function to collect the memory to the buffer
+ * @return none
+ */
+__atomextern void atom_init(void* data, size_t size, void* (*extract)(void*, size_t), void (*collect)(void*, void*));
+
+/**
+ * Release all usage memories by the atom's runtime
  */
 __atomextern void atom_release(void);
 
@@ -180,16 +190,20 @@ __atomextern void atom_release(void);
  * @params context - const char* or FILE*
  */
 __atomextern int atom_lexer_init(atom_lexer_t*, int type, void* context);
+__atomextern int atom_lexer_free(atom_lexer_t*);
 
 __atomextern atom_node_t* atom_create(atom_type_t type, atom_text_t name);
 __atomextern void         atom_delete(atom_node_t* node);
 
 __atomextern void         atom_addchild(atom_node_t* node, atom_node_t* child);
+//__atomextern void         atom_remove_child(atom_node_t* node, atom_node_t* child);
 
 __atomextern atom_node_t* atom_parse(atom_lexer_t* lexer);
 
 __atomextern int atom_save_file(atom_node_t* node, FILE* file);
-__atomextern int atom_save_text(atom_node_t* node, char* buffer, size_t length);
+__atomextern int atom_save_text(atom_node_t* node, char* text, size_t size);
+__atomextern int atom_save_file_with_lexer(atom_lexer_t* lexer, atom_node_t* node, FILE* file);  
+__atomextern int atom_save_text_with_lexer(atom_lexer_t* lexer, atom_node_t* node, char* text, size_t size);
 
 __atominline atom_node_t* atom_newlist(atom_text_t name);
 __atominline atom_node_t* atom_newlong(atom_text_t name, atom_long_t value);
@@ -203,12 +217,8 @@ __atominline atom_node_t* atom_newtext(atom_text_t name, atom_text_t value);
 __atominline atom_bool_t  atom_istextnull(atom_text_t text);
 __atomextern atom_bool_t  atom_tolong(const char* text, atom_data_t* value);
 __atomextern atom_bool_t  atom_toreal(const char* text, atom_data_t* value);
-__atomextern size_t       atom_textcpy(atom_lexer_t* lexer,
-				       atom_text_t text,
-				       char* buffer);
-__atomextern size_t       atom_textcmp(atom_lexer_t* lexer,
-				       atom_text_t text,
-				       const char* string);
+__atomextern size_t       atom_textcpy(atom_lexer_t* lexer, atom_text_t text, char* buffer);
+__atomextern size_t       atom_textcmp(atom_lexer_t* lexer, atom_text_t text, const char* string);
 
 __atomextern size_t       atom_getfilesize(FILE* file);
 __atomextern void         atom_print(atom_lexer_t* lexer, atom_node_t* node);
@@ -266,9 +276,16 @@ __atominline atom_node_t* atom_newtext(atom_text_t name, atom_text_t value)
 #ifdef ATOM_IMPL
 #include <ctype.h>
 #include <errno.h>
-#include <assert.h>
 #include <string.h>
-#include <setjmp.h>
+#include <setjmp.h> 
+
+/***********************
+* Configurable helper
+***********************/
+#ifndef atom_assert                             
+#include <assert.h>
+#define atom_assert(exp, msg, ...) assert(exp)
+#endif
 
 #define __STR__(x) __VAL__(x)
 #define __VAL__(x) #x
@@ -276,8 +293,8 @@ __atominline atom_node_t* atom_newtext(atom_text_t name, atom_text_t value)
 #ifdef NDEBUG
 #define atom_lexer_error(l, e) _atomLexerError(l, e)
 #else
-#define atom_lexer_error(l, e)						\
-  printf("Error at:" __FILE__ ":" __STR__(__LINE__) ":%s\n", __func__);	\
+#define atom_lexer_error(l, e)						                             \
+  fprintf(stderr, "Error at:" __FILE__ ":" __STR__(__LINE__) ":%s\n", __func__); \
   _atom_lexer_error(l, e)
 #endif
 
@@ -294,14 +311,44 @@ __atominline atom_node_t* atom_newtext(atom_text_t name, atom_text_t value)
 
 
 /**
-* Atom node memory pool
-*/
+ * Internal, default malloc function
+ */
+static void* atom_malloc(void* data, size_t size)
+{
+    (void)data;
+    return malloc(size);
+}
+
+/** 
+ * Internal, default free function
+ */
+static void atom_free(void* data, void* pointer)
+{
+    (void)data;
+    free(pointer);
+}
+
+/**
+ * Atom node memory pool
+ */
+typedef struct atom_nodepool atom_nodepool_t;
+struct atom_nodepool
+{
+    atom_nodepool_t* prev;
+    atom_node_t*     node;
+} *atom_nodepool = NULL; 
+
+/**
+ * Memory buffer
+ */
 struct
 {
-    atom_node_t** memories;
-    atom_node_t*  head;
-    size_t        count;
-} atom_nodepool = { NULL, NULL, 0 };
+    void*  data;
+    size_t size;
+    void*  (*extract)(void* data, size_t size);
+    void   (*collect)(void* data, void* pointer); 
+    /* No padding needed */
+} atom_membuf = { NULL, 0, atom_malloc, atom_free };
 
 /**
 * Allocate node memory, getting from pool or craete new
@@ -309,46 +356,31 @@ struct
 */
 static atom_node_t* atom_newnode(void)
 {
-    if (!atom_nodepool.head)
+    if (!atom_nodepool || !atom_nodepool->node)
     {
-        const size_t  bucketSize = ATOM_BUCKETS;
-        const size_t  arrayCount = atom_nodepool.count;
-        const size_t  memorySize = sizeof(atom_node_t) * bucketSize; 
-        atom_node_t** memories   = atom_nodepool.memories;
+        const size_t size = sizeof(atom_nodepool_t) + sizeof(atom_node_t) * ATOM_BUCKETS;
 
-        memories = realloc(memories,
-            sizeof(atom_node_t*) * (arrayCount + 1));
-        if (!memories)
+        atom_nodepool_t* nodepool = atom_membuf.extract(atom_membuf.data, size);
+        if (!nodepool)
         {
-            /* @error: out of memory
-            */
+            /* @error: out of memory */
             return NULL;
         }
 
-        memories[arrayCount] = malloc(memorySize);
-        if (!memories[arrayCount])
-        {
-            /* @error: out of memory
-            */
-            return NULL;
-        }
-
-        atom_node_t* node  = memories[arrayCount];
-        atom_nodepool.head = node;
-        for (int i = 0; i < bucketSize - 1; i++)
+        atom_node_t* node = (atom_node_t*)((char*)nodepool + sizeof(atom_nodepool_t));
+        nodepool->node    = node; /* head node */
+        for (int i = 0; i < ATOM_BUCKETS - 1; i++)
         {
             node->next = node + i;
         }
-        node->next         = NULL;
-        node->name         = ATOM_TEXT_NULL;
-        node->data.as_text = ATOM_TEXT_NULL;
+        node->next = NULL; /* tail node */
 
-        atom_nodepool.memories   = memories;
-        atom_nodepool.count      = arrayCount + 1; 
+        nodepool->prev = atom_nodepool;
+        atom_nodepool  = nodepool;
     }
 
-    atom_node_t*  node = atom_nodepool.head;
-    atom_nodepool.head = node->next;
+    atom_node_t*   node = atom_nodepool->node;
+    atom_nodepool->node = node->next;
     return node;
 }
 
@@ -358,31 +390,29 @@ static atom_node_t* atom_newnode(void)
 */
 static void atom_freenode(atom_node_t* node)
 {
-    if (atom_nodepool.memories && node)
+    if (atom_nodepool && node)
     {
-        node->next = atom_nodepool.head;
-        atom_nodepool.head = node;
+        node->next          = atom_nodepool->node;
+        atom_nodepool->node = node;
     }
 }
 
+/* @function: atom_init */
+void atom_init(void* data, size_t size, void* (*extract)(void*, size_t), void (*collect)(void*, void*))
+{
+    atom_membuf.data    = data;
+    atom_membuf.size    = size;
+    atom_membuf.extract = extract;
+    atom_membuf.collect = collect;
+}
 
 /* @function: atom_release */
 void atom_release(void)
 {
-    if (atom_nodepool.memories)
+    while (atom_nodepool)
     {
-        for (int i = 0; i < atom_nodepool.count; i++)
-        {
-            //atom_node_t* node = atomNodePool.memories[i];
-            free(atom_nodepool.memories[i]);
-        }
-        free(atom_nodepool.memories);
-
-        /* Garbage collecting
-        */
-        atom_nodepool.memories   = NULL;
-        atom_nodepool.head       = NULL;
-        atom_nodepool.count      = 0;
+        atom_membuf.collect(atom_membuf.data, atom_nodepool);
+        atom_nodepool = atom_nodepool->prev;
     }
 }
 
@@ -390,7 +420,7 @@ void atom_release(void)
 /* @function: atom_getfilesize */
 size_t atom_getfilesize(FILE* file)
 {
-    assert(file != NULL);
+    atom_assert(file != NULL);
     fpos_t prev = ftell(file);
     fseek(file, 0, SEEK_END);
     size_t size = ftell(file);
@@ -402,7 +432,7 @@ size_t atom_getfilesize(FILE* file)
 /* @function: atom_lexer_init */
 int atom_lexer_init(atom_lexer_t* lexer, int type, void* context)
 {
-    assert(lexer != NULL);
+    atom_assert(lexer != NULL);
 
     if (!context)
     {
@@ -414,13 +444,13 @@ int atom_lexer_init(atom_lexer_t* lexer, int type, void* context)
     switch (type)
     {
     case ATOM_LEXER_STREAM:
-        lexer->length        = atom_getfilesize(context);
-        lexer->buffer.stream = context;
+        lexer->length = atom_getfilesize(context);
+        lexer->stream = context;
         break;
 
     case ATOM_LEXER_STRING:
-        lexer->length        = strlen(context);
-        lexer->buffer.string = context;
+        lexer->length = strlen(context);
+        lexer->string = context;
         break;
 
     default:
@@ -438,6 +468,15 @@ int atom_lexer_init(atom_lexer_t* lexer, int type, void* context)
     return ATOM_ERROR_NONE;
 }
 
+int atom_lexer_free(atom_lexer_t* lexer)
+{                         
+    if (lexer)
+    {
+        // TODO: do release memory
+    }
+    return ATOM_ERROR_NONE;
+}
+
 
 /**
 * Check if lexer reach the end
@@ -446,7 +485,7 @@ int atom_lexer_init(atom_lexer_t* lexer, int type, void* context)
 */
 static atom_bool_t atom_lexer_iseof(atom_lexer_t* lexer)
 {
-    assert(lexer != NULL);
+    atom_assert(lexer != NULL);
     return lexer->cursor >= lexer->length;
 }
 
@@ -457,12 +496,12 @@ static atom_bool_t atom_lexer_iseof(atom_lexer_t* lexer)
 */
 static char atom_lexer_get(atom_lexer_t* lexer, int cursor)
 {
-    assert(lexer != NULL);
+    atom_assert(lexer != NULL);
     switch (lexer->type)
     {
     case ATOM_LEXER_STREAM:
     {
-        FILE*  stream = lexer->buffer.stream;
+        FILE*  stream = lexer->stream;
         fpos_t pos = cursor;
         fsetpos(stream, &pos);
         return fgetc(stream);
@@ -470,11 +509,11 @@ static char atom_lexer_get(atom_lexer_t* lexer, int cursor)
 
     case ATOM_LEXER_STRING:
     {
-        return lexer->buffer.string[cursor];
+        return lexer->string[cursor];
     }
 
     default:
-        assert(0 && "Type of lexer (lexer->type) is invalid");
+        atom_assert(0 && "Type of lexer (lexer->type) is invalid");
     }
 }
 
@@ -484,7 +523,7 @@ static char atom_lexer_get(atom_lexer_t* lexer, int cursor)
 */
 static char atom_lexer_peek(atom_lexer_t* lexer)
 {
-    assert(lexer != NULL);
+    atom_assert(lexer != NULL);
 
     if (atom_lexer_iseof(lexer))
     {
@@ -495,7 +534,7 @@ static char atom_lexer_peek(atom_lexer_t* lexer)
     {
     case ATOM_LEXER_STREAM:
     {
-        FILE*  stream = lexer->buffer.stream;
+        FILE*  stream = lexer->stream;
         fpos_t cursor = ftell(stream);
         if (cursor != lexer->cursor)
         {
@@ -509,11 +548,11 @@ static char atom_lexer_peek(atom_lexer_t* lexer)
 
     case ATOM_LEXER_STRING:
     {
-        return lexer->buffer.string[lexer->cursor];
+        return lexer->string[lexer->cursor];
     }
 
     default:
-        assert(0 && "Type of lexer (lexer->type) is invalid");
+        atom_assert(0, "Type of lexer (lexer->type) is invalid");
     }
 }
 
@@ -523,7 +562,7 @@ static char atom_lexer_peek(atom_lexer_t* lexer)
 */
 static char atom_lexer_next(atom_lexer_t* lexer)
 {
-    assert(lexer != NULL);
+    atom_assert(lexer != NULL);
     lexer->cursor++;
     char c = atom_lexer_peek(lexer);
     if (c == '\n')
@@ -544,7 +583,7 @@ static char atom_lexer_next(atom_lexer_t* lexer)
 */
 static void atom_lexer_skipspace(atom_lexer_t* lexer)
 {
-    assert(lexer != NULL);
+    atom_assert(lexer != NULL);
 
     char c = atom_lexer_peek(lexer);
     while (atom_isspace(c))
@@ -559,7 +598,7 @@ static void atom_lexer_skipspace(atom_lexer_t* lexer)
 */
 static void atom_lexer_skipcomment(atom_lexer_t* lexer)
 {
-    assert(lexer != NULL);
+    atom_assert(lexer != NULL);
 
     char c = atom_lexer_peek(lexer);
     while (c && c != '\n' && c != '\r')
@@ -574,7 +613,7 @@ static void atom_lexer_skipcomment(atom_lexer_t* lexer)
 */
 static void _atom_lexer_error(atom_lexer_t* lexer, int errcode)
 {
-    assert(lexer != NULL);
+    atom_assert(lexer != NULL);
 
     int line   = lexer->line;
     int column = lexer->column;
@@ -677,7 +716,7 @@ void atom_delete(atom_node_t* node)
 */
 atom_bool_t atom_tolong(const char* text, atom_data_t* value)
 {
-    assert(text != NULL && value != NULL);
+    atom_assert(text != NULL && value != NULL);
 
     const char* ptr = text;
     char c    = *ptr;
@@ -715,7 +754,7 @@ atom_bool_t atom_tolong(const char* text, atom_data_t* value)
 */ 
 atom_bool_t atom_toreal(const char* text, atom_data_t* value)
 {
-    assert(text != NULL && value != NULL);
+    atom_assert(text != NULL && value != NULL);
 
     const char* ptr = text;
     char c    = *ptr;
@@ -773,7 +812,7 @@ static atom_node_t* atom_read(atom_lexer_t* lexer);
 */
 static atom_node_t* atom_readatom(atom_lexer_t* lexer)
 {
-    assert(lexer != NULL);
+    atom_assert(lexer != NULL);
 
     /* Nothing to parse when its end
     */
@@ -881,7 +920,7 @@ static atom_bool_t atom_list_to_single(atom_node_t* node)
 */
 static atom_node_t* atom_readlist(atom_lexer_t* lexer)
 {
-    assert(lexer != NULL);
+    atom_assert(lexer != NULL);
 
     if (atom_lexer_iseof(lexer))
     {
@@ -963,7 +1002,7 @@ static atom_node_t* atom_readlist(atom_lexer_t* lexer)
 */
 atom_node_t* atom_read(atom_lexer_t* lexer)
 {
-    assert(lexer != NULL);
+    atom_assert(lexer != NULL);
 
     /* Leave 
     */
@@ -1004,7 +1043,7 @@ atom_node_t* atom_read(atom_lexer_t* lexer)
 */
 atom_node_t* atom_parse(atom_lexer_t* lexer)
 {
-    assert(lexer != NULL);
+    atom_assert(lexer != NULL);
 
     atom_node_t* root = NULL;
     atom_node_t* node = NULL;
@@ -1057,8 +1096,8 @@ atom_node_t* atom_parse(atom_lexer_t* lexer)
 */
 static size_t atom_totext_with_lexer(atom_lexer_t* lexer, atom_node_t* node, char* text, size_t size)
 {
-    assert(node != NULL);
-    assert(text != NULL && size > 0);
+    atom_assert(node != NULL);
+    atom_assert(text != NULL && size > 0);
 
 
     static int stack = 0;
@@ -1183,8 +1222,8 @@ static size_t atom_totext_with_lexer(atom_lexer_t* lexer, atom_node_t* node, cha
 */
 int atom_save_file(atom_node_t* node, FILE* file)
 {
-    assert(node != NULL);
-    assert(file != NULL);
+    atom_assert(node != NULL);
+    atom_assert(file != NULL);
 
     static int stack = 0;
     int result = 0;
@@ -1288,13 +1327,13 @@ int atom_save_file(atom_node_t* node, FILE* file)
 */
 int atom_save_text_with_lexer(atom_lexer_t* lexer, atom_node_t* node, char* buffer, size_t size)
 {
-    assert(lexer != NULL);
+    atom_assert(lexer != NULL);
     if (!node || !buffer || size == 0)
     {
         return ATOM_ERROR_ARGUMENTS;
     }
 
-    assert(buffer != NULL && size > 0);
+    atom_assert(buffer != NULL && size > 0);
     size_t count = atom_totext_with_lexer(lexer, node, buffer, size);
     buffer[count] = 0;
     return ATOM_ERROR_NONE;
@@ -1304,7 +1343,7 @@ int atom_save_text_with_lexer(atom_lexer_t* lexer, atom_node_t* node, char* buff
 */
 void atom_addchild(atom_node_t* node, atom_node_t* child)
 {
-    assert(node != NULL);
+    atom_assert(node != NULL);
     child->parent = node;
 
     if (child->type == ATOM_LIST)
@@ -1404,7 +1443,7 @@ void atom_print(atom_lexer_t* lexer, atom_node_t* node)
 */
 size_t atom_textcpy(atom_lexer_t* lexer, atom_text_t text, char* string)
 {
-    assert(lexer != NULL);
+    atom_assert(lexer != NULL);
 
     size_t size = 0;
     for (int i = text.head, n = text.tail; i < n; i++, size++)
@@ -1420,7 +1459,7 @@ size_t atom_textcpy(atom_lexer_t* lexer, atom_text_t text, char* string)
 */
 size_t atom_textcmp(atom_lexer_t* lexer, atom_text_t text, const char* string)
 {
-    assert(lexer != NULL);
+    atom_assert(lexer != NULL);
 
     char a, b;
     for (int i = text.head; i < text.tail && (b = *string); i++, string++)
